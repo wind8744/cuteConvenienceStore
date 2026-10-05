@@ -6,7 +6,7 @@ namespace ConvenienceStore
     public class ShelfView : MonoBehaviour
     {
         private readonly SpriteRenderer[] _items = new SpriteRenderer[StoreArt.ShelfSlots];
-        private SpriteRenderer _frame, _alert, _alertIcon;
+        private SpriteRenderer _frame, _alert, _alertIcon, _priceTag;
 
         public ShelfStock Stock { get; private set; }
         /// <summary>진열대 가운데의 월드 좌표.</summary>
@@ -28,6 +28,15 @@ namespace ConvenienceStore
                 _items[i] = go.AddComponent<SpriteRenderer>();
                 _items[i].sortingOrder = order + 1;
             }
+
+            // 가격대 표시: 싸게는 파란 딱지, 비싸게는 금색 딱지. 보통일 때는 숨긴다.
+            var tagGo = new GameObject("Price Tag");
+            tagGo.transform.SetParent(transform, false);
+            tagGo.transform.localPosition = new Vector3(1.78f, 1.6f, 0f);
+            tagGo.transform.localScale = new Vector3(0.3f, 0.2f, 1f);
+            _priceTag = tagGo.AddComponent<SpriteRenderer>();
+            _priceTag.sprite = art.WhitePixel;
+            _priceTag.sortingOrder = order + 2;
 
             var alertGo = new GameObject("Alert");
             alertGo.transform.SetParent(transform, false);
@@ -54,6 +63,8 @@ namespace ConvenienceStore
         {
             for (int i = 0; i < _items.Length; i++) _items[i].enabled = Stock.Open && i < Stock.Stock;
             // 아직 들여오지 않은 상품의 진열대는 어둡게 둔다.
+            _priceTag.enabled = Stock.Open && Stock.Tier != PriceTier.Normal;
+            _priceTag.color = Stock.Tier == PriceTier.Cheap ? new Color(0.35f, 0.65f, 1f) : new Color(1f, 0.8f, 0.2f);
             _frame.color = Stock.Open ? Color.white : new Color(0.72f, 0.7f, 0.74f);
         }
 

@@ -7,6 +7,24 @@ namespace ConvenienceStore
     /// <summary>그날그날 달라지는 마을 사정. 잘 팔리는 상품과 손님 수가 바뀝니다.</summary>
     public enum DayEvent { None, Rainy, Picnic, HeatWave, Payday }
 
+    /// <summary>상품 가격대. 싸게 팔면 잘 팔리고 평판이 빨리 오르고, 비싸게 팔면 그 반대입니다.</summary>
+    public enum PriceTier { Cheap, Normal, Premium }
+
+    /// <summary>마을 집에 사는 단골. 계산해 줄 때마다 호감도가 오릅니다.</summary>
+    public class Resident
+    {
+        public readonly string Name;
+        /// <summary>좋아하는 상품의 Id. 가게에 들여놓았다면 주로 이것을 사러 옵니다.</summary>
+        public readonly int Favorite;
+        public int Friendship { get; internal set; }
+
+        public Resident(string name, int favorite)
+        {
+            Name = name;
+            Favorite = favorite;
+        }
+    }
+
     /// <summary>이어 하기용 저장 데이터. 하루를 시작할 때의 가게 상태입니다.</summary>
     [System.Serializable]
     public class StoreSave
@@ -15,6 +33,8 @@ namespace ConvenienceStore
         public bool HasClerk;
         public float Reputation;
         public int[] Stock;
+        public int[] Tiers;
+        public int[] Friendship;
     }
 
     /// <summary>하루 영업 정산 결과.</summary>
@@ -26,13 +46,15 @@ namespace ConvenienceStore
         public int Rent;
         public int Wage;
         public int Tips;
+        /// <summary>친해진 단골에게 받은 선물.</summary>
+        public int Gifts;
         /// <summary>오늘의 목표를 달성해 받은 보너스. 못 채웠으면 0.</summary>
         public int GoalBonus;
         public int Goal;
         public int Served;
         public int Lost;
         public int MoneyAfter;
-        public int Profit => Sales + Tips + GoalBonus - RestockCost - Rent - Wage;
+        public int Profit => Sales + Tips + Gifts + GoalBonus - RestockCost - Rent - Wage;
         public bool Bankrupt => MoneyAfter < 0;
     }
 
@@ -55,6 +77,7 @@ namespace ConvenienceStore
         public const float TipRate = 0.15f;
         /// <summary>손님을 놓치지 않고 이만큼 연속으로 응대할 때마다 평판 보너스.</summary>
         public const int StreakStep = 5;
+        public const int MaxFriendship = 10;
 
         public int Money { get; private set; } = StartMoney;
         public int Day { get; private set; } = 1;
@@ -65,6 +88,12 @@ namespace ConvenienceStore
         public int MarketingLevel { get; private set; }
         public bool HasClerk { get; private set; }
         public ShelfStock[] Shelves { get; }
+        /// <summary>마을 집 번호 순서대로 그 집에 사는 사람.</summary>
+        public Resident[] Residents { get; } =
+        {
+            new Resident("민지", 0), new Resident("준호", 1), new Resident("순자 할머니", 2),
+            new Resident("서연", 3), new Resident("태양", 4), new Resident("하루", 5),
+        };
 
         public int ShelfCapacity => BaseCapacity + CapacityPerLevel * ShelfLevel;
         public int Rent => 5000 + 1500 * (Day - 1);
@@ -78,7 +107,7 @@ namespace ConvenienceStore
         /// <summary>월급날에는 손님이 하나씩 더 삽니다.</summary>
         public int ExtraQuantity => Event == DayEvent.Payday ? 1 : 0;
 
-        private int _sales, _restockCost, _served, _lost, _tips;
+        private int _sales, _restockCost, _served, _lost, _tips, _gifts;
 
         public StoreEconomy() : this(null) { }
 
@@ -103,6 +132,14 @@ namespace ConvenienceStore
             {
                 Shelves[i] = new ShelfStock(products[i], ShelfCapacity, i < UnlockedProducts);
                 if (save?.Stock != null && i < save.Stock.Length) Shelves[i].Restore(save.Stock[i]);
+                if (save?.Tiers != null && i < save.Tiers.Length)
+                {
+                    Shelves[i].Tier = (PriceTier)Mathf.Clamp(save.Tiers[i], 0, (int)PriceTier.Premium);
+                }
+            }
+            for (int i = 0; save?.Friendship != null && i < Residents.Length && i < save.Friendship.Length; i++)
+            {
+                Residents[i].Friendship = Mathf.Clamp(save.Friendship[i], 0, MaxFriendship);
             }
         }
 
@@ -113,8 +150,15 @@ namespace ConvenienceStore
                 Money = Money, Day = Day, UnlockedProducts = UnlockedProducts, ShelfLevel = ShelfLevel,
                 MarketingLevel = MarketingLevel, Event = (int)Event, HasClerk = HasClerk, Reputation = Reputation,
                 Stock = new int[Shelves.Length],
+                Tiers = new int[Shelves.Length],
+                Friendship = new int[Residents.Length],
             };
-            for (int i = 0; i < Shelves.Length; i++) save.Stock[i] = Shelves[i].Stock;
+            for (int i = 0; i < Shelves.Length; i++)
+            {
+                save.Stock[i] = Shelves[i].Stock;
+                save.Tiers[i] = (int)Shelves[i].Tier;
+            }
+            for (int i = 0; i < Residents.Length; i++) save.Friendship[i] = Residents[i].Friendship;
             return save;
         }
 
@@ -144,16 +188,45 @@ namespace ConvenienceStore
             return Mathf.CeilToInt(product.Price * quantity * TipRate * multiplier / 100f) * 100;
         }
 
-        /// <summary>손님 한 명 계산 완료. 팁을 뺀 물건값을 돌려줍니다.</summary>
-        public int Sell(Product product, int quantity, int tip = 0)
+        /// <summary>가격대를 반영한 판매가. 100원 단위.</summary>
+        public static int PriceOf(Product product, PriceTier tier)
         {
-            int income = product.Price * quantity;
+            float factor = tier == PriceTier.Cheap ? 0.8f : tier == PriceTier.Premium ? 1.3f : 1f;
+            return Mathf.RoundToInt(product.Price * factor / 100f) * 100;
+        }
+
+        public static string TierName(PriceTier tier) =>
+            tier == PriceTier.Cheap ? "싸게" : tier == PriceTier.Premium ? "비싸게" : "보통";
+
+        /// <summary>싸게 → 보통 → 비싸게 → 싸게 순서로 가격대를 바꿉니다.</summary>
+        public void CyclePrice(ShelfStock shelf) => shelf.Tier = (PriceTier)(((int)shelf.Tier + 1) % 3);
+
+        /// <summary>단골이 물건을 사 갔습니다. 호감도가 오르고, 5와 10이 되는 날 선물을 받습니다. 선물 금액을 돌려줍니다.</summary>
+        public int ServeResident(int index)
+        {
+            Resident resident = Residents[index];
+            if (resident.Friendship >= MaxFriendship) return 0;
+            resident.Friendship++;
+            int gift = resident.Friendship == MaxFriendship ? 20000 : resident.Friendship == MaxFriendship / 2 ? 5000 : 0;
+            Money += gift;
+            _gifts += gift;
+            return gift;
+        }
+
+        /// <summary>친한 단골일수록 팁이 후합니다.</summary>
+        public float ResidentTipMultiplier(int index) => 1f + 0.1f * Residents[index].Friendship;
+
+        /// <summary>손님 한 명 계산 완료. 팁을 뺀 물건값을 돌려줍니다.</summary>
+        public int Sell(Product product, int quantity, int tip = 0, PriceTier tier = PriceTier.Normal)
+        {
+            int income = PriceOf(product, tier) * quantity;
             Money += income + tip;
             _sales += income;
             _tips += tip;
             _served++;
             Streak++;
-            AddReputation(Streak % StreakStep == 0 ? 5f : 2f);
+            float gain = tier == PriceTier.Cheap ? 3f : tier == PriceTier.Premium ? 1f : 2f;
+            AddReputation(Streak % StreakStep == 0 ? gain + 3f : gain);
             return income;
         }
 
@@ -228,6 +301,7 @@ namespace ConvenienceStore
                 Rent = rent,
                 Wage = wage,
                 Tips = _tips,
+                Gifts = _gifts,
                 GoalBonus = bonus,
                 Goal = DailyGoal,
                 Served = _served,
@@ -240,7 +314,7 @@ namespace ConvenienceStore
         public void StartNextDay(DayEvent? nextEvent = null)
         {
             Day++;
-            _sales = _restockCost = _served = _lost = _tips = 0;
+            _sales = _restockCost = _served = _lost = _tips = _gifts = 0;
             Event = nextEvent ?? RollEvent(Random.value);
         }
 
@@ -255,7 +329,13 @@ namespace ConvenienceStore
         /// <summary>오늘 이 진열대의 상품이 얼마나 잘 팔리는지. 평소는 1.</summary>
         public float DemandWeight(int shelfIndex)
         {
-            int id = Shelves[shelfIndex].Product.Id;
+            PriceTier tier = Shelves[shelfIndex].Tier;
+            float price = tier == PriceTier.Cheap ? 1.5f : tier == PriceTier.Premium ? 0.6f : 1f;
+            return price * EventDemand(Shelves[shelfIndex].Product.Id);
+        }
+
+        private float EventDemand(int id)
+        {
             switch (Event)
             {
                 case DayEvent.Rainy: return id == 1 ? 3f : 1f;

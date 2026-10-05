@@ -41,8 +41,11 @@ namespace ConvenienceStore
 
         /// <summary>마을에서 걸어올 때와 같은 모습으로 집에 돌아가도록 기억해 둡니다.</summary>
         public CharacterSprites Sprites { get; set; }
-        /// <summary>이 손님이 사는 집 번호.</summary>
-        public int Home { get; set; }
+        /// <summary>마을 집에 사는 단골이면 그 집 번호, 마을 밖에서 온 손님이면 -1.</summary>
+        public int Resident { get; set; } = -1;
+        /// <summary>볼일이 끝나고 돌아갈 마을 칸 (집 문 앞 또는 길 끝).</summary>
+        public Vector2Int HomeTile { get; set; }
+        public ShelfStock Shelf => _game.Economy.Shelves[_shelfIndex];
         public CustomerKind Kind { get; set; }
         public float TipMultiplier => Kind == CustomerKind.Vip ? 3f : Kind == CustomerKind.Hurried ? 2f : 1f;
         public Product Product => _game.Economy.Shelves[_shelfIndex].Product;

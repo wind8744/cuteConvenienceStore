@@ -9,6 +9,8 @@ namespace ConvenienceStore
         public bool Open { get; private set; }
         public int Capacity { get; private set; }
         public int Stock { get; private set; }
+        /// <summary>이 진열대 상품에 매긴 가격대.</summary>
+        public PriceTier Tier { get; set; } = PriceTier.Normal;
         public int Missing => Open ? Capacity - Stock : 0;
 
         public ShelfStock(Product product, int capacity, bool open)

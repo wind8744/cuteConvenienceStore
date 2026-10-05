@@ -419,6 +419,102 @@ namespace ConvenienceStore.Tests
         }
     }
 
+    public class PriceAndResidentTests
+    {
+        private StoreEconomy _economy;
+
+        [SetUp]
+        public void SetUp() => _economy = new StoreEconomy();
+
+        [Test]
+        public void PriceTier_ChangesPriceDemandAndReputationGain()
+        {
+            ShelfStock shelf = _economy.Shelves[0];
+            Product kimbap = shelf.Product;
+            Assert.AreEqual(1000, StoreEconomy.PriceOf(kimbap, PriceTier.Cheap), "1,200원의 80%를 100원 단위로");
+            Assert.AreEqual(1200, StoreEconomy.PriceOf(kimbap, PriceTier.Normal));
+            Assert.AreEqual(1600, StoreEconomy.PriceOf(kimbap, PriceTier.Premium));
+
+            Assert.AreEqual(PriceTier.Normal, shelf.Tier);
+            _economy.CyclePrice(shelf);
+            Assert.AreEqual(PriceTier.Premium, shelf.Tier);
+            Assert.Less(_economy.DemandWeight(0), _economy.DemandWeight(1), "비싸면 덜 찾는다");
+            float before = _economy.Reputation;
+            Assert.AreEqual(3200, _economy.Sell(kimbap, 2, 0, shelf.Tier));
+            Assert.AreEqual(before + 1f, _economy.Reputation, 0.001f);
+
+            _economy.CyclePrice(shelf);
+            Assert.AreEqual(PriceTier.Cheap, shelf.Tier);
+            Assert.Greater(_economy.DemandWeight(0), _economy.DemandWeight(1), "싸면 더 찾는다");
+            before = _economy.Reputation;
+            Assert.AreEqual(1000, _economy.Sell(kimbap, 1, 0, shelf.Tier));
+            Assert.AreEqual(before + 3f, _economy.Reputation, 0.001f);
+
+            _economy.CyclePrice(shelf);
+            Assert.AreEqual(PriceTier.Normal, shelf.Tier);
+        }
+
+        [Test]
+        public void Residents_OnePerHouseWithDistinctFavorites()
+        {
+            Assert.AreEqual(new VillageMap().Houses.Count, _economy.Residents.Length);
+            var favorites = new HashSet<int>();
+            foreach (Resident r in _economy.Residents)
+            {
+                Assert.IsNotEmpty(r.Name);
+                Assert.IsTrue(favorites.Add(r.Favorite));
+                Assert.Less(r.Favorite, ProductCatalog.All.Length);
+            }
+        }
+
+        [Test]
+        public void ServingAResident_BuildsFriendshipAndEarnsGifts()
+        {
+            int money = _economy.Money, gifts = 0;
+            for (int i = 1; i <= StoreEconomy.MaxFriendship; i++)
+            {
+                int gift = _economy.ServeResident(2);
+                Assert.AreEqual(i, _economy.Residents[2].Friendship);
+                Assert.AreEqual(i == 5 ? 5000 : i == 10 ? 20000 : 0, gift, $"호감도 {i}");
+                gifts += gift;
+            }
+            Assert.AreEqual(0, _economy.ServeResident(2), "끝까지 친해지면 더 오르지 않음");
+            Assert.AreEqual(StoreEconomy.MaxFriendship, _economy.Residents[2].Friendship);
+            Assert.AreEqual(money + 25000, _economy.Money);
+            Assert.AreEqual(2f, _economy.ResidentTipMultiplier(2), 0.001f);
+            Assert.AreEqual(1f, _economy.ResidentTipMultiplier(0), 0.001f);
+
+            DayReport report = _economy.EndDay();
+            Assert.AreEqual(gifts, report.Gifts);
+            Assert.AreEqual(25000 - report.Rent, report.Profit);
+        }
+
+        [Test]
+        public void Save_KeepsPriceTiersAndFriendship()
+        {
+            _economy.CyclePrice(_economy.Shelves[1]);
+            _economy.ServeResident(4);
+            _economy.ServeResident(4);
+
+            var loaded = new StoreEconomy(JsonUtility.FromJson<StoreSave>(JsonUtility.ToJson(_economy.ToSave())));
+            Assert.AreEqual(PriceTier.Premium, loaded.Shelves[1].Tier);
+            Assert.AreEqual(PriceTier.Normal, loaded.Shelves[0].Tier);
+            Assert.AreEqual(2, loaded.Residents[4].Friendship);
+            Assert.AreEqual(0, loaded.Residents[0].Friendship);
+        }
+
+        [Test]
+        public void RoadEnds_LeadToTheStore()
+        {
+            var village = new VillageMap();
+            Assert.Greater(village.RoadEnds.Count, 0);
+            foreach (Vector2Int end in village.RoadEnds)
+            {
+                Assert.IsNotNull(village.FindPath(end, village.Entrances[0], village.IsRoad), end.ToString());
+            }
+        }
+    }
+
     public class StoreArtTests
     {
         [Test]

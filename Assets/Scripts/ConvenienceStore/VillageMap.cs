@@ -55,6 +55,7 @@ namespace ConvenienceStore
         private readonly List<Vector2Int> _trees = new List<Vector2Int>();
         private readonly List<Vector2Int> _lamps = new List<Vector2Int>();
         private readonly List<Vector2Int> _entrances = new List<Vector2Int>();
+        private readonly List<Vector2Int> _roadEnds = new List<Vector2Int>();
 
         /// <summary>집이 차지한 칸들의 왼쪽 아래. 번호 순서.</summary>
         public IReadOnlyList<Vector2Int> Houses => _houses;
@@ -62,6 +63,8 @@ namespace ConvenienceStore
         public IReadOnlyList<Vector2Int> Lamps => _lamps;
         /// <summary>편의점 문 앞 칸. 왼쪽부터.</summary>
         public IReadOnlyList<Vector2Int> Entrances => _entrances;
+        /// <summary>마을 가장자리에 닿은 길 끝. 마을 밖에서 오는 손님이 드나드는 곳.</summary>
+        public IReadOnlyList<Vector2Int> RoadEnds => _roadEnds;
         /// <summary>편의점 건물이 차지한 칸들의 왼쪽 아래.</summary>
         public Vector2Int Store { get; }
 
@@ -85,6 +88,7 @@ namespace ConvenienceStore
                     else if (t == 't') _trees.Add(p);
                     else if (t == 'l') _lamps.Add(p);
                     else if (t == 'E') _entrances.Add(p);
+                    else if (t == 'p' && (x == 1 || x == Width - 2)) _roadEnds.Add(p);
                     else if (t == 'S' && !storeFound)
                     {
                         Store = p;

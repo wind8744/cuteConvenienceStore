@@ -22,15 +22,21 @@ namespace ConvenienceStore
 
     public static class ProductCatalog
     {
-        /// <summary>진열대 번호(맵의 '1'~'6') 순서와 같습니다.</summary>
+        /// <summary>진열대 번호(맵의 '1'~'9', 'a'~'c') 순서와 같습니다.</summary>
         public static readonly Product[] All =
         {
             new Product(0, "삼각김밥", 600, 1200, 0),
             new Product(1, "컵라면", 800, 1500, 0),
             new Product(2, "바나나우유", 900, 1700, 0),
             new Product(3, "과자", 1000, 2000, 20000),
-            new Product(4, "아이스크림", 1200, 2500, 45000),
-            new Product(5, "도시락", 2500, 5000, 90000),
+            new Product(4, "아이스크림", 1200, 2500, 40000),
+            new Product(5, "도시락", 2500, 5000, 70000),
+            new Product(6, "커피", 1000, 2200, 100000),
+            new Product(7, "젤리", 700, 1500, 140000),
+            new Product(8, "핫바", 1200, 2400, 180000),
+            new Product(9, "샌드위치", 1800, 3600, 230000),
+            new Product(10, "생수", 400, 900, 290000),
+            new Product(11, "초콜릿", 1100, 2300, 350000),
         };
     }
 }

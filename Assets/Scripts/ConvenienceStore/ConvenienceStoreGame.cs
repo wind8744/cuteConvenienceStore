@@ -33,11 +33,12 @@ namespace ConvenienceStore
             public string Text;
             public Color Color;
             public float Age;
+            public float Life;
         }
 
         private static readonly Upgrade[] UpgradeKeys =
         {
-            Upgrade.NewProduct, Upgrade.ShelfSize, Upgrade.Clerk, Upgrade.Marketing
+            Upgrade.ShelfSize, Upgrade.Clerk, Upgrade.Stocker, Upgrade.Marketing
         };
 
         private const float FloatingTextSeconds = 1.2f;
@@ -62,7 +63,13 @@ namespace ConvenienceStore
         private bool[] _flyered;
         private bool[] _residentOut;
         private CharacterSprites[] _residentSprites;
-        private bool _showNotebook;
+        private bool _showNotebook, _showProducts;
+        private int _productCursor;
+        private bool[] _talked;
+        private readonly List<ResidentNpc> _residentNpcs = new List<ResidentNpc>();
+        /// <summary>주인이 손에 든 상품의 진열대 번호(-1 이면 빈손)와 개수.</summary>
+        private int _handProduct = -1, _handCount;
+        private const int HandMax = 3;
         private string _banner;
         private float _bannerTimer;
         private DayReport _report;
@@ -70,6 +77,10 @@ namespace ConvenienceStore
 
         private StoreOwner _owner;
         private GameObject _clerk;
+        private Stocker _stocker;
+        private CharacterView _ownerView;
+        private Fishing _fishing;
+        private AutoPilot _autoPilot;
         private SpriteRenderer _daylight;
         private readonly List<ShelfView> _shelfViews = new List<ShelfView>();
         private readonly List<Customer> _customers = new List<Customer>();
@@ -79,6 +90,10 @@ namespace ConvenienceStore
         private GUIStyle _panelStyle, _labelStyle, _titleStyle, _floatStyle;
 
         public StoreMap Map { get; private set; }
+        internal IReadOnlyList<ShelfView> ShelfViews => _shelfViews;
+        internal bool FrontCustomerReady => _queue.Count > 0 && _queue[0].ReadyForCheckout;
+        internal bool InSummary => _state == State.Summary;
+        internal bool StoreOpen => _state == State.Open;
         public VillageMap Village { get; private set; }
         public StoreArt Art { get; private set; }
         public StoreEconomy Economy { get; private set; }
@@ -106,6 +121,9 @@ namespace ConvenienceStore
             _prompt = null;
             if (Input.GetKeyDown(KeyCode.M)) _audio.ToggleMusic();
             if (Input.GetKeyDown(KeyCode.Tab)) _showNotebook = !_showNotebook;
+            if (Input.GetKeyDown(KeyCode.F1)) _autoPilot.Enabled = !_autoPilot.Enabled;
+            _autoPilot.Tick();
+            UpdateProductPanel();
             switch (_state)
             {
                 case State.Open:
@@ -137,7 +155,7 @@ namespace ConvenienceStore
             {
                 FloatingText t = _texts[i];
                 t.Age += Time.deltaTime;
-                if (t.Age >= FloatingTextSeconds) _texts.RemoveAt(i);
+                if (t.Age >= t.Life) _texts.RemoveAt(i);
                 else _texts[i] = t;
             }
         }
@@ -150,12 +168,17 @@ namespace ConvenienceStore
             _spawnTimer = 2f;
             _clerkTimer = 0f;
             _clerk.SetActive(Economy.HasClerk);
+            _stocker.gameObject.SetActive(Economy.HasStocker);
             _owner.MoveTo(Map, StoreMap.FeetPos(Map.ClerkSpot));
             _inVillage = false;
             _owner.CanMove = true;
             foreach (ShelfView view in _shelfViews) view.Refresh();
             _flyered = new bool[Village.Houses.Count];
             _residentOut = new bool[Village.Houses.Count];
+            _talked = new bool[Village.Houses.Count];
+            foreach (ResidentNpc npc in _residentNpcs) npc.gameObject.SetActive(true);
+            if (Economy.Quests.Count == 0) Economy.MakeQuests();
+            PutHandBack();
             // 하루를 시작할 때마다 자동 저장한다.
             PlayerPrefs.SetString(SaveKey, JsonUtility.ToJson(Economy.ToSave()));
             PlayerPrefs.Save();
@@ -175,7 +198,7 @@ namespace ConvenienceStore
 
         private void UpdateSummary()
         {
-            bool next = Input.GetKeyDown(KeyCode.Space) || Input.GetKeyDown(KeyCode.Return);
+            bool next = Input.GetKeyDown(KeyCode.Space) || Input.GetKeyDown(KeyCode.Return) || _autoPilot.TakePress();
             if (Input.GetKeyDown(KeyCode.Backspace) || (next && _report.Bankrupt))
             {
                 // 새 게임: 저장을 지우고 첫날부터.
@@ -229,6 +252,7 @@ namespace ConvenienceStore
                 sprites = _residentSprites[resident];
                 home = Village.HouseDoor(resident);
                 _residentOut[resident] = true;
+                _residentNpcs[resident].gameObject.SetActive(false);
             }
             else
             {
@@ -254,7 +278,9 @@ namespace ConvenienceStore
             Vector2Int entrance = Village.Entrances[Random.Range(0, Village.Entrances.Count)];
             CharacterView view = SpawnWalker(sprites, entrance, home, () =>
             {
-                if (resident >= 0) _residentOut[resident] = false;
+                if (resident < 0) return;
+                _residentOut[resident] = false;
+                _residentNpcs[resident].gameObject.SetActive(true);
             });
             if (resident >= 0) view.SetBadge(Art.Heart);
         }
@@ -266,7 +292,7 @@ namespace ConvenienceStore
             {
                 // 단골은 좋아하는 상품이 가게에 있으면 주로 그것을 찾는다.
                 int favorite = Economy.Residents[resident].Favorite;
-                if (favorite < Economy.UnlockedProducts && Random.value < 0.6f) shelfIndex = favorite;
+                if (Economy.Shelves[favorite].OnSale && Random.value < 0.6f) shelfIndex = favorite;
             }
             float speed = _customerSpeed * Random.Range(0.85f, 1.15f);
             float patience = _patienceSeconds * Random.Range(0.85f, 1.15f);
@@ -276,7 +302,7 @@ namespace ConvenienceStore
                 float roll = Random.value;
                 want = (roll < 0.6f ? 1 : roll < 0.9f ? 2 : 3) + Economy.ExtraQuantity;
 
-                // 가끔 특별한 손님이 온다. VIP 는 가게가 조금 알려진 뒤부터.
+                // 가끔 특별한 손님이 온다. VIP 는 가게가 조금 알려진 뒤부터, 진상은 둘째 날부터.
                 float special = resident >= 0 ? 1f : Random.value;
                 if (special < 0.08f && Economy.Reputation >= 55f)
                 {
@@ -290,6 +316,16 @@ namespace ConvenienceStore
                     speed *= 1.5f;
                     patience *= 0.55f;
                 }
+                else if (special < 0.32f && Economy.Day >= 2)
+                {
+                    kind = CustomerKind.Rude;
+                    patience *= 0.8f;
+                }
+                else if (special < 0.44f)
+                {
+                    kind = CustomerKind.Kind;
+                    patience *= 1.6f;
+                }
             }
             if (!_inVillage) _audio.Play(_audio.Chime, 0.6f);
             int doorX = Map.Entrances[Random.Range(0, Map.Entrances.Count)].x;
@@ -302,6 +338,8 @@ namespace ConvenienceStore
             customer.Kind = kind;
             if (kind == CustomerKind.Vip) view.SetBadge(Art.Crown);
             else if (kind == CustomerKind.Hurried) view.SetBadge(Art.Bolt);
+            else if (kind == CustomerKind.Rude) view.SetBadge(Art.Anger);
+            else if (kind == CustomerKind.Kind) view.SetBadge(Art.Star);
             else if (resident >= 0) view.SetBadge(Art.Heart);
             customer.Sprites = sprites;
             customer.Resident = resident;
@@ -362,12 +400,19 @@ namespace ConvenienceStore
                 }
             }
 
-            bool pressed = Input.GetKeyDown(KeyCode.Space) || Input.GetKeyDown(KeyCode.E);
+            bool pressed = Input.GetKeyDown(KeyCode.Space) || _autoPilot.TakePress();
+            if (_showProducts) return;
             if (_inVillage)
             {
-                UpdateFlyers(pressed);
+                if (_fishing.Active)
+                {
+                    _fishing.Update(pressed);
+                    _prompt = _fishing.Prompt;
+                }
+                else if (!UpdateResidents(pressed) && !UpdateFishingPrompt(pressed)) UpdateFlyers(pressed);
                 return;
             }
+            if (Input.GetKeyDown(KeyCode.G)) PutHandBack();
             if (front != null && Map.IsClerkZone(_owner.Position))
             {
                 _prompt = $"[Space] 계산하기 · {front.Product.Name} {front.Carrying}개";
@@ -387,6 +432,8 @@ namespace ConvenienceStore
             }
             string price = $"[Q] 가격 {StoreEconomy.TierName(shelf.Stock.Tier)} "
                 + Won(StoreEconomy.PriceOf(product, shelf.Stock.Tier));
+            if (Input.GetKeyDown(KeyCode.F)) PickUp(shelf);
+            price += _handProduct < 0 || _handProduct == shelf.Stock.Product.Id ? " · [F] 하나 집기" : "";
             if (shelf.Stock.Missing <= 0)
             {
                 _prompt = $"{product.Name} · {price}";
@@ -428,14 +475,167 @@ namespace ConvenienceStore
                     _prompt = $"{name}네 집 · 지금은 아무도 없어요";
                     return;
                 }
-                _prompt = $"[Space] {name}네 집에 전단지 넣기 · 바로 장 보러 나와요";
-                if (!pressed) return;
-                _flyered[i] = true;
-                Economy.AddReputation(1f);
-                SendVillager(i, 3).ShowBubble(Art.Heart, 2.5f);
-                Float(door + Vector2.up * 1.6f, "전단지 쏙!", Good);
-                _audio.Play(_audio.Flyer);
+                _prompt = $"[E] {name}네 집에 전단지 넣기 · 바로 장 보러 나와요";
+                if (Input.GetKeyDown(KeyCode.E)) GiveFlyer(i);
                 return;
+            }
+        }
+
+        private void GiveFlyer(int house)
+        {
+            _flyered[house] = true;
+            Economy.AddReputation(1f);
+            SendVillager(house, 3).ShowBubble(Art.Heart, 2.5f);
+            Float(Village.TileToWorld(Village.HouseDoor(house)) + Vector2.up * 1.6f, "전단지 쏙!", Good);
+            _audio.Play(_audio.Flyer);
+        }
+
+        // ── 마을 사람과 어울리기 ──────────────────────────────────────────
+
+        /// <summary>
+        /// 집 앞에 있는 마을 사람 곁에 서면 말을 걸거나(하루 한 번 호감도 +1) 부탁한 물건을 건넬 수 있습니다.
+        /// 안내를 띄웠으면 true.
+        /// </summary>
+        private bool UpdateResidents(bool pressed)
+        {
+            for (int i = 0; i < _residentNpcs.Count; i++)
+            {
+                ResidentNpc npc = _residentNpcs[i];
+                if (!npc.gameObject.activeSelf || Vector2.Distance(npc.Position, _owner.Position) > FlyerRange) continue;
+                Resident resident = Economy.Residents[i];
+                Quest quest = Economy.QuestFor(i);
+                bool flyer = _state == State.Open && !_flyered[i];
+                string extra = flyer ? " · [E] 전단지" : "";
+                if (flyer && Input.GetKeyDown(KeyCode.E)) GiveFlyer(i);
+                if (quest != null)
+                {
+                    Product wanted = ProductCatalog.All[quest.Product];
+                    bool hasIt = _handProduct == quest.Product && _handCount >= quest.Quantity;
+                    if (hasIt)
+                    {
+                        _prompt = $"[Space] {resident.Name}에게 {wanted.Name} {quest.Quantity}개 건네기 · 보상 {Won(quest.Reward)}{extra}";
+                        if (pressed) Deliver(i, quest);
+                        return true;
+                    }
+                    _prompt = $"{resident.Name}: {wanted.Name} {quest.Quantity}개 부탁해요! (손에 {HandText()})"
+                        + (_talked[i] ? "" : " · [Space] 말 걸기") + extra;
+                    if (pressed && !_talked[i]) Talk(i);
+                    return true;
+                }
+                _prompt = (_talked[i] ? $"{resident.Name}: 오늘은 이야기 많이 했어요" : $"[Space] {resident.Name}에게 말 걸기") + extra;
+                if (pressed && !_talked[i]) Talk(i);
+                return true;
+            }
+            return false;
+        }
+
+        private void Talk(int index)
+        {
+            Resident resident = Economy.Residents[index];
+            _talked[index] = true;
+            int gift = Economy.ServeResident(index);
+            Say(index, Dialogue(resident), 3f);
+            if (gift > 0)
+            {
+                Float(_residentNpcs[index].Position + Vector2.up * 2.4f, $"{resident.Name}의 선물 +{Won(gift)}", Gold);
+                _audio.Play(_audio.Buy);
+            }
+            else _audio.Play(_audio.Flyer);
+        }
+
+        private void Deliver(int index, Quest quest)
+        {
+            Resident resident = Economy.Residents[index];
+            int earned = Economy.CompleteQuest(quest);
+            _handProduct = -1;
+            _handCount = 0;
+            _ownerView.SetBadge(null);
+            Say(index, "고마워요, 사장님! 이거 받으세요", 3f);
+            Float(_residentNpcs[index].Position + Vector2.up * 2.4f, $"부탁 완료 +{Won(earned)}", Gold);
+            _residentNpcs[index].GetComponent<CharacterView>().ShowBubble(Art.Heart, 3f);
+            _audio.Play(_audio.DayEnd);
+        }
+
+        /// <summary>마을 사람 머리 위에 말을 띄웁니다.</summary>
+        private void Say(int index, string text, float seconds)
+        {
+            Float(_residentNpcs[index].Position + Vector2.up * 1.7f, $"{Economy.Residents[index].Name}: {text}", Ink,
+                seconds);
+        }
+
+        private static string Dialogue(Resident resident)
+        {
+            string favorite = ProductCatalog.All[resident.Favorite].Name;
+            if (resident.Friendship >= 9) return "사장님 덕분에 동네가 살아요!";
+            if (resident.Friendship >= 6) return $"{favorite} 있으면 꼭 들를게요";
+            if (resident.Friendship >= 3) return "오늘도 가게 잘 되죠?";
+            return "안녕하세요, 사장님!";
+        }
+
+        // ── 손에 든 물건 ───────────────────────────────────────────────────
+
+        private string HandText() => _handProduct < 0 ? "빈손" : $"{ProductCatalog.All[_handProduct].Name} {_handCount}개";
+
+        /// <summary>진열대에서 하나 집어 듭니다. 같은 상품만 최대 3개까지.</summary>
+        private void PickUp(ShelfView shelf)
+        {
+            ShelfStock stock = shelf.Stock;
+            int id = stock.Product.Id;
+            if (_handProduct >= 0 && _handProduct != id)
+            {
+                Float(_owner.Position + Vector2.up * 1.6f, $"{HandText()}를 들고 있어요 · G 로 내려놓기", Bad);
+                return;
+            }
+            if (_handCount >= HandMax || stock.Take(1) == 0) return;
+            _handProduct = id;
+            _handCount++;
+            shelf.Refresh();
+            _ownerView.SetBadge(Art.ProductIcons[id]);
+            _audio.Play(_audio.Restock, 0.6f);
+        }
+
+        /// <summary>손에 든 물건을 원래 진열대에 돌려놓습니다.</summary>
+        private void PutHandBack()
+        {
+            if (_handProduct < 0) return;
+            _shelfViews[_handProduct].Stock.Add(_handCount);
+            _shelfViews[_handProduct].Refresh();
+            _handProduct = -1;
+            _handCount = 0;
+            _ownerView.SetBadge(null);
+        }
+
+        // ── 상품 관리 ─────────────────────────────────────────────────────
+
+        /// <summary>P 로 여닫는 상품 관리 화면. ↑↓ 로 고르고 Space 로 판매/보류, Enter 로 들여오기.</summary>
+        private void UpdateProductPanel()
+        {
+            if (Input.GetKeyDown(KeyCode.P) && !_fishing.Active && _state != State.Summary)
+            {
+                _showProducts = !_showProducts;
+                _owner.CanMove = !_showProducts && _state != State.Summary;
+            }
+            if (!_showProducts) return;
+
+            int count = Economy.Shelves.Length;
+            if (Input.GetKeyDown(KeyCode.UpArrow) || Input.GetKeyDown(KeyCode.W)) _productCursor = (_productCursor + count - 1) % count;
+            if (Input.GetKeyDown(KeyCode.DownArrow) || Input.GetKeyDown(KeyCode.S)) _productCursor = (_productCursor + 1) % count;
+
+            ShelfStock shelf = Economy.Shelves[_productCursor];
+            if (Input.GetKeyDown(KeyCode.Space) && shelf.Open)
+            {
+                shelf.Selling = !shelf.Selling;
+                _shelfViews[_productCursor].Refresh();
+                _audio.Play(_audio.Flyer);
+            }
+            if (Input.GetKeyDown(KeyCode.Return) && !shelf.Open)
+            {
+                if (Economy.TryUnlock(_productCursor))
+                {
+                    _shelfViews[_productCursor].Refresh();
+                    _audio.Play(_audio.Buy);
+                }
+                else _audio.Play(_audio.Angry, 0.5f);
             }
         }
 
@@ -444,15 +644,22 @@ namespace ConvenienceStore
         {
             Vector2 at = (Vector2)customer.transform.position + Vector2.up * 1.4f;
             bool regular = customer.Resident >= 0;
+            bool rude = customer.Kind == CustomerKind.Rude, kind = customer.Kind == CustomerKind.Kind;
             float tipMultiplier = customer.TipMultiplier
                 * (regular ? Economy.ResidentTipMultiplier(customer.Resident) : 1f);
-            int tip = byOwner
-                ? Economy.TipFor(customer.Product, customer.Carrying, customer.PatienceRatio, tipMultiplier)
+            int tip = byOwner && !rude
+                ? Economy.TipFor(customer.Product, customer.Carrying, customer.PatienceRatio, tipMultiplier, kind)
                 : 0;
             string tipName = customer.Kind == CustomerKind.Vip ? "VIP 팁"
                 : customer.Kind == CustomerKind.Hurried ? "바쁜 손님 팁"
+                : kind ? "착한 손님의 팁"
                 : regular ? "단골 팁" : "빠른 계산 팁";
-            int income = Economy.Sell(customer.Product, customer.Carrying, tip, customer.Shelf.Tier);
+            // 진상은 값을 깎고(싸게 가격) 평판도 안 오른다. 착한 손님은 평판을 두 배로 올려 준다.
+            PriceTier tier = rude ? PriceTier.Cheap : customer.Shelf.Tier;
+            float gain = rude ? 0f : kind ? 4f : -1f;
+            int income = Economy.Sell(customer.Product, customer.Carrying, tip, tier, gain);
+            if (rude) Float(at + Vector2.up * 1.8f, "진상 손님 보냈다...", Ink);
+            else if (kind) Float(at + Vector2.up * 1.8f, "착한 손님! 평판 UP", Good);
             if (regular)
             {
                 Resident resident = Economy.Residents[customer.Resident];
@@ -498,7 +705,49 @@ namespace ConvenienceStore
 
         // ── 손님이 호출하는 것들 ──────────────────────────────────────────
 
-        public void JoinQueue(Customer customer) => _queue.Add(customer);
+        /// <summary>줄에 섭니다. 진상 손님은 맨 앞으로 새치기합니다.</summary>
+        public void JoinQueue(Customer customer, bool cutInLine = false)
+        {
+            if (cutInLine) _queue.Insert(0, customer);
+            else _queue.Add(customer);
+        }
+
+        /// <summary>줄에 진상 손님이 있으면 다른 손님들은 두 배로 빨리 지칩니다.</summary>
+        public float PatienceDrain(Customer customer)
+        {
+            if (customer.Kind == CustomerKind.Rude) return 1f;
+            foreach (Customer other in _queue)
+            {
+                if (other != customer && other.Kind == CustomerKind.Rude) return 2f;
+            }
+            return 1f;
+        }
+
+        /// <summary>진열 알바가 채우러 갈 진열대. 재고가 1/3 아래로 떨어졌고 채울 돈이 있는 것 중 가장 빈 곳. 없으면 -1.</summary>
+        public int ShelfNeedingRestock()
+        {
+            int best = -1, bestStock = int.MaxValue;
+            for (int i = 0; i < _shelfViews.Count; i++)
+            {
+                ShelfStock stock = _shelfViews[i].Stock;
+                if (!stock.OnSale || stock.Stock > stock.Capacity / 3 || Economy.AffordableRestock(stock) <= 0) continue;
+                if (stock.Stock >= bestStock) continue;
+                bestStock = stock.Stock;
+                best = i;
+            }
+            return best;
+        }
+
+        /// <summary>진열 알바가 진열대를 채웁니다.</summary>
+        public void RestockByStocker(int shelfIndex)
+        {
+            ShelfView shelf = _shelfViews[shelfIndex];
+            int count = Economy.Restock(shelf.Stock);
+            if (count <= 0) return;
+            shelf.Refresh();
+            if (!_inVillage) _audio.Play(_audio.Restock, 0.6f);
+            Float(shelf.Center + Vector2.up, $"-{Won(count * shelf.Stock.Product.Cost)}", Bad);
+        }
 
         public void LeaveQueue(Customer customer) => _queue.Remove(customer);
 
@@ -561,10 +810,35 @@ namespace ConvenienceStore
             }
 
             var ownerGo = new GameObject("Owner");
-            var ownerView = ownerGo.AddComponent<CharacterView>();
-            ownerView.Init(Art.Owner, Art.Bubble);
+            _ownerView = ownerGo.AddComponent<CharacterView>();
+            _ownerView.Init(Art.Owner, Art.Bubble);
             _owner = ownerGo.AddComponent<StoreOwner>();
-            _owner.Init(Map, ownerView, StoreMap.FeetPos(Map.ClerkSpot), _ownerSpeed);
+            _owner.Init(Map, _ownerView, StoreMap.FeetPos(Map.ClerkSpot), _ownerSpeed);
+            _fishing = new Fishing(this, _owner, _ownerView, _audio);
+            _autoPilot = new AutoPilot(this, _owner);
+#if UNITY_EDITOR
+            // 개발용: 이 파일이 있으면 자동 플레이로 시작한다 (Library/ 는 Git 에 들어가지 않는다).
+            _autoPilot.Enabled = System.IO.File.Exists("Library/AutoPlay/autopilot.txt");
+#endif
+
+            // 마을 사람들은 집 앞에서 어슬렁거린다. 장 보러 나가면 숨긴다.
+            for (int i = 0; i < Village.Houses.Count; i++)
+            {
+                var npcGo = new GameObject($"Resident {i + 1}");
+                var npcView = npcGo.AddComponent<CharacterView>();
+                npcView.Init(_residentSprites[i], Art.Bubble);
+                npcView.SetBadge(Art.Heart);
+                var npc = npcGo.AddComponent<ResidentNpc>();
+                npc.Init(Village, npcView, Village.HouseDoor(i) + Vector2Int.right);
+                _residentNpcs.Add(npc);
+            }
+
+            // 진열 알바는 고용하기 전까지 숨겨 둔다. 가게 오른쪽 위 구석에서 대기한다.
+            var stockerGo = new GameObject("Stocker");
+            var stockerView = stockerGo.AddComponent<CharacterView>();
+            stockerView.Init(Art.Stocker, Art.Bubble);
+            _stocker = stockerGo.AddComponent<Stocker>();
+            _stocker.Init(this, stockerView, new Vector2Int(Map.Width - 5, Map.Height - 6), _customerSpeed * 1.2f);
 
             // 알바생은 고용하기 전까지 숨겨 둔다. 계산대 뒤에서 손님 쪽(왼쪽)을 본다.
             _clerk = new GameObject("Clerk");
@@ -683,12 +957,12 @@ namespace ConvenienceStore
 
         // ── HUD ───────────────────────────────────────────────────────────
 
-        private void Float(Vector2 worldPos, string text, Color color)
+        internal void Float(Vector2 worldPos, string text, Color color, float seconds = FloatingTextSeconds)
         {
-            _texts.Add(new FloatingText { Pos = worldPos, Text = text, Color = color });
+            _texts.Add(new FloatingText { Pos = worldPos, Text = text, Color = color, Life = seconds });
         }
 
-        private static string Won(int amount) => $"{amount:N0}원";
+        internal static string Won(int amount) => $"{amount:N0}원";
 
         private void OnGUI()
         {
@@ -699,6 +973,14 @@ namespace ConvenienceStore
             if (Economy.Event == DayEvent.Rainy && _inVillage && _state != State.Summary) DrawRain(s);
             DrawTopBar(s);
             DrawFloatingTexts(s);
+            if (_autoPilot.Enabled)
+            {
+                string autoText = $"자동 플레이 · {_autoPilot.Status} · F1 끄기";
+                float autoW = _labelStyle.CalcSize(new GUIContent(autoText)).x + 30f * s;
+                var auto = new Rect(Screen.width - autoW - 12f * s, 64f * s, autoW, 40f * s);
+                GUI.Box(auto, GUIContent.none, _panelStyle);
+                Label(auto, autoText, Good, TextAnchor.MiddleCenter);
+            }
 
             if (_state == State.Summary)
             {
@@ -707,16 +989,36 @@ namespace ConvenienceStore
             }
 
             if (_showNotebook) DrawNotebook(s);
+            if (_showProducts) DrawProductPanel(s);
+            DrawQuestLine(s);
+            if (_fishing.Active) _fishing.Draw(s, _panelStyle, _labelStyle, Ink);
             float bottom = Screen.height - 64f * s;
-            if (_bannerTimer > 0f) DrawPrompt(_banner, s, 70f * s);
+            // 부탁 줄 아래에 띄운다.
+            if (_bannerTimer > 0f) DrawPrompt(_banner, s, Economy.Quests.Count > 0 ? 112f * s : 70f * s);
             if (_prompt != null)
             {
                 DrawPrompt(_prompt, s, bottom);
             }
             else if (Economy.Day == 1 && _hour < _openHour + 3f)
             {
-                DrawPrompt("방향키/WASD 이동 · Space: 계산대 뒤에서 계산, 진열대 옆에서 채우기 · Tab: 마을 수첩", s, bottom);
+                DrawPrompt("방향키/WASD 이동 · Space: 계산/채우기 · P: 상품 관리 · Tab: 마을 수첩", s, bottom);
             }
+        }
+
+        /// <summary>연못가에 서면 낚시를 시작할 수 있습니다. 낚시 안내를 띄웠으면 true.</summary>
+        private bool UpdateFishingPrompt(bool pressed)
+        {
+            if (_state != State.Open && _state != State.Closing) return false;
+            Vector2Int tile = Village.WorldToTile(_owner.Position);
+            bool nearWater = false;
+            foreach (Vector2Int d in new[] { Vector2Int.up, Vector2Int.down, Vector2Int.left, Vector2Int.right })
+            {
+                if (Village.TileAt(tile.x + d.x, tile.y + d.y) == 'w') nearWater = true;
+            }
+            if (!nearWater) return false;
+            _prompt = "[Space] 낚시하기 · 입질이 오면 Space, 초록 칸에서 다시 Space";
+            if (pressed) _fishing.Start();
+            return true;
         }
 
         /// <summary>마을 수첩: 집마다 사는 단골의 이름, 좋아하는 상품, 호감도(하트 하나가 2).</summary>
@@ -733,7 +1035,7 @@ namespace ConvenienceStore
             for (int i = 0; i < residents.Length; i++)
             {
                 Resident r = residents[i];
-                bool unlocked = r.Favorite < Economy.UnlockedProducts;
+                bool unlocked = Economy.Shelves[r.Favorite].OnSale;
                 Label(new Rect(x, y, 200f * s, line), $"{i + 1}번 집  {r.Name}", Ink, TextAnchor.MiddleLeft);
                 Label(new Rect(x + 200f * s, y, 220f * s, line), $"좋아하는 것: {ProductCatalog.All[r.Favorite].Name}",
                     unlocked ? Ink : InkFaded, TextAnchor.MiddleLeft);
@@ -745,7 +1047,62 @@ namespace ConvenienceStore
                 y += line;
             }
             Label(new Rect(panel.x, panel.yMax - 50f * s, w, line),
-                "단골을 계산해 줄수록 친해져요 · Tab: 닫기", Ink, TextAnchor.MiddleCenter);
+                "계산해 주거나 말을 걸거나 부탁을 들어주면 친해져요 · Tab: 닫기", Ink, TextAnchor.MiddleCenter);
+        }
+
+        /// <summary>상단 바 아래에 오늘의 부탁과 손에 든 물건을 한 줄로 보여 줍니다.</summary>
+        private void DrawQuestLine(float s)
+        {
+            if (_state == State.Summary || Economy.Quests.Count == 0) return;
+            var parts = new List<string>();
+            foreach (Quest q in Economy.Quests)
+            {
+                string who = Economy.Residents[q.Resident].Name, what = ProductCatalog.All[q.Product].Name;
+                parts.Add(q.Done ? $"{who}: {what} {q.Quantity}개 (완료)" : $"{who}: {what} {q.Quantity}개 → {Won(q.Reward)}");
+            }
+            string text = "부탁  " + string.Join("  ·  ", parts) + (_handProduct >= 0 ? $"   |   손: {HandText()}" : "");
+            float w = _labelStyle.CalcSize(new GUIContent(text)).x + 40f * s, h = 36f * s;
+            var rect = new Rect(12f * s, 64f * s, w, h);
+            GUI.Box(rect, GUIContent.none, _panelStyle);
+            Label(rect, text, Ink, TextAnchor.MiddleCenter);
+        }
+
+        /// <summary>상품 관리 화면. 들여온 상품은 판매/보류를 고르고, 안 들여온 상품은 값을 치르고 들여옵니다.</summary>
+        private void DrawProductPanel(float s)
+        {
+            ShelfStock[] shelves = Economy.Shelves;
+            float line = 34f * s, w = 700f * s, h = 150f * s + line * shelves.Length;
+            var panel = new Rect((Screen.width - w) * 0.5f, (Screen.height - h) * 0.5f, w, h);
+            GUI.Box(panel, GUIContent.none, _panelStyle);
+            _titleStyle.normal.textColor = Ink;
+            GUI.Label(new Rect(panel.x, panel.y + 16f * s, w, 44f * s), "상품 관리", _titleStyle);
+
+            float x = panel.x + 36f * s, y = panel.y + 70f * s, icon = 21f * s;
+            for (int i = 0; i < shelves.Length; i++)
+            {
+                ShelfStock shelf = shelves[i];
+                Product p = shelf.Product;
+                bool selected = i == _productCursor;
+                if (selected)
+                {
+                    GUI.color = new Color(1f, 0.85f, 0.4f, 0.35f);
+                    GUI.DrawTexture(new Rect(panel.x + 20f * s, y, w - 40f * s, line), Texture2D.whiteTexture);
+                    GUI.color = Color.white;
+                }
+                GUI.DrawTexture(new Rect(x, y + (line - icon) * 0.5f, icon, icon), Art.ProductIcons[i].texture);
+                Color color = shelf.Open ? Ink : InkFaded;
+                Label(new Rect(x + 32f * s, y, 150f * s, line), p.Name, color, TextAnchor.MiddleLeft);
+                Label(new Rect(x + 180f * s, y, 220f * s, line),
+                    $"매입 {Won(p.Cost)} · 판매 {Won(StoreEconomy.PriceOf(p, shelf.Tier))}", color, TextAnchor.MiddleLeft);
+                string status = !shelf.Open ? $"미입고 · 들여오기 {Won(p.UnlockCost)}"
+                    : shelf.Selling ? $"판매 중 · 재고 {shelf.Stock}/{shelf.Capacity}" : $"보류 · 재고 {shelf.Stock}/{shelf.Capacity}";
+                Color statusColor = !shelf.Open ? (Economy.Money >= p.UnlockCost ? Ink : InkFaded)
+                    : shelf.Selling ? Good : Bad;
+                Label(new Rect(x + 400f * s, y, 260f * s, line), status, statusColor, TextAnchor.MiddleLeft);
+                y += line;
+            }
+            Label(new Rect(panel.x, panel.yMax - 50f * s, w, 30f * s),
+                "↑↓ 고르기 · Space 판매/보류 · Enter 들여오기 · P 닫기", Ink, TextAnchor.MiddleCenter);
         }
 
         /// <summary>화면 위에 빗줄기를 그립니다. 빗방울마다 정해진 자리에서 아래로 흘러내립니다.</summary>
@@ -773,7 +1130,7 @@ namespace ConvenienceStore
 
         private void DrawTopBar(float s)
         {
-            var bar = new Rect(12f * s, 10f * s, 900f * s, 48f * s);
+            var bar = new Rect(12f * s, 10f * s, 920f * s, 48f * s);
             GUI.Box(bar, GUIContent.none, _panelStyle);
 
             float x = bar.x + 20f * s, y = bar.y, h = bar.height, icon = 21f * s;
@@ -803,9 +1160,9 @@ namespace ConvenienceStore
             x += 5f * (icon + 3f * s) + 14f * s;
 
             bool reached = Economy.ServedToday >= Economy.DailyGoal;
-            Label(new Rect(x, y, 130f * s, h), $"목표 {Economy.ServedToday}/{Economy.DailyGoal}명", reached ? Good : Ink,
+            Label(new Rect(x, y, 150f * s, h), $"목표 {Economy.ServedToday}/{Economy.DailyGoal}명", reached ? Good : Ink,
                 TextAnchor.MiddleLeft);
-            x += 132f * s;
+            x += 150f * s;
             Label(new Rect(x, y, 130f * s, h), StoreEconomy.EventName(Economy.Event), Ink, TextAnchor.MiddleLeft);
         }
 
@@ -815,7 +1172,7 @@ namespace ConvenienceStore
             if (cam == null) return;
             foreach (FloatingText t in _texts)
             {
-                float k = t.Age / FloatingTextSeconds;
+                float k = t.Age / t.Life;
                 Vector3 screen = cam.WorldToScreenPoint(t.Pos + Vector2.up * (k * 0.8f));
                 var rect = new Rect(screen.x - 200f * s, Screen.height - screen.y - 20f * s, 400f * s, 40f * s);
                 float alpha = Mathf.Clamp01(2f - k * 2f);
@@ -833,7 +1190,7 @@ namespace ConvenienceStore
 
         private void DrawSummary(float s)
         {
-            float w = 600f * s, h = 630f * s;
+            float w = 600f * s, h = 690f * s;
             var panel = new Rect((Screen.width - w) * 0.5f, (Screen.height - h) * 0.5f, w, h);
             GUI.Box(panel, GUIContent.none, _panelStyle);
 
@@ -852,6 +1209,8 @@ namespace ConvenienceStore
             Row("매출", $"+{Won(_report.Sales)}", Ink);
             if (_report.Tips > 0) Row("팁", $"+{Won(_report.Tips)}", Ink);
             if (_report.Gifts > 0) Row("단골의 선물", $"+{Won(_report.Gifts)}", Good);
+            if (_report.Extra > 0) Row("낚시 수입", $"+{Won(_report.Extra)}", Good);
+            if (_report.QuestsDone > 0) Row($"부탁 보상 ({_report.QuestsDone}건)", $"+{Won(_report.QuestReward)}", Good);
             if (_report.GoalBonus > 0) Row($"목표 달성 보너스 ({_report.Goal}명)", $"+{Won(_report.GoalBonus)}", Good);
             Row("상품 매입", $"-{Won(_report.RestockCost)}", Ink);
             Row("임대료", $"-{Won(_report.Rent)}", Ink);
@@ -880,7 +1239,7 @@ namespace ConvenienceStore
                 Row($"[{i + 1}] {UpgradeName(UpgradeKeys[i])}", cost < 0 ? "완료" : Won(cost), color);
             }
 
-            Label(new Rect(panel.x, panel.yMax - 54f * s, w, line), "Space: 다음 날 영업 시작 · Backspace: 새 게임", Ink,
+            Label(new Rect(panel.x, panel.yMax - 54f * s, w, line), "Space: 다음 날 시작 · P: 상품 관리(영업 중) · Backspace: 새 게임", Ink,
                 TextAnchor.MiddleCenter);
         }
 
@@ -888,14 +1247,12 @@ namespace ConvenienceStore
         {
             switch (upgrade)
             {
-                case Upgrade.NewProduct:
-                    return Economy.UnlockedProducts < Economy.Shelves.Length
-                        ? $"신상품 입고: {Economy.Shelves[Economy.UnlockedProducts].Product.Name}"
-                        : "신상품 입고";
                 case Upgrade.ShelfSize:
                     return $"진열대 확장 (지금 {Economy.ShelfCapacity}칸)";
                 case Upgrade.Clerk:
-                    return $"알바생 고용 (자동 계산, 일당 {Won(StoreEconomy.ClerkWage)})";
+                    return $"계산 알바 고용 (자동 계산, 일당 {Won(StoreEconomy.ClerkWage)})";
+                case Upgrade.Stocker:
+                    return $"진열 알바 고용 (빈 진열대 채움, 일당 {Won(StoreEconomy.StockerWage)})";
                 default:
                     return $"전단지 홍보 Lv.{Economy.MarketingLevel} (손님 +20%)";
             }

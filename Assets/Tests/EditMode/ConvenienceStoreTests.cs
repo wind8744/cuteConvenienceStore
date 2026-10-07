@@ -197,19 +197,23 @@ namespace ConvenienceStore.Tests
         [Test]
         public void Upgrades_CostMoneyAndApply()
         {
-            Assert.IsFalse(_economy.TryBuy(Upgrade.NewProduct), "돈이 모자라면 살 수 없음");
+            Assert.IsFalse(_economy.TryUnlock(5), "돈이 모자라면 들여올 수 없음");
             Assert.AreEqual(StoreEconomy.StartProducts, _economy.UnlockedProducts);
 
             // 삼각김밥을 넉넉히 팔아 돈을 번다.
             _economy.Sell(ProductCatalog.All[0], 500);
             int money = _economy.Money;
 
-            int cost = _economy.UpgradeCost(Upgrade.NewProduct);
-            Assert.IsTrue(_economy.TryBuy(Upgrade.NewProduct));
+            // 순서와 상관없이 원하는 상품을 고를 수 있다.
+            int cost = ProductCatalog.All[5].UnlockCost;
+            Assert.IsTrue(_economy.TryUnlock(5));
             Assert.AreEqual(money - cost, _economy.Money);
-            ShelfStock opened = _economy.Shelves[StoreEconomy.StartProducts];
+            ShelfStock opened = _economy.Shelves[5];
             Assert.IsTrue(opened.Open);
             Assert.AreEqual(opened.Capacity, opened.Stock, "신상품은 가득 채워서 입고");
+            Assert.IsFalse(_economy.Shelves[3].Open);
+            Assert.IsFalse(_economy.TryUnlock(5), "이미 들여온 상품은 다시 못 산다");
+            Assert.AreEqual(StoreEconomy.StartProducts + 1, _economy.UnlockedProducts);
 
             Assert.IsTrue(_economy.TryBuy(Upgrade.ShelfSize));
             Assert.AreEqual(StoreEconomy.BaseCapacity + StoreEconomy.CapacityPerLevel, _economy.Shelves[0].Capacity);
@@ -350,7 +354,8 @@ namespace ConvenienceStore.Tests
         {
             var economy = new StoreEconomy();
             economy.Sell(ProductCatalog.All[0], 300);
-            Assert.IsTrue(economy.TryBuy(Upgrade.NewProduct));
+            Assert.IsTrue(economy.TryUnlock(4));
+            economy.Shelves[1].Selling = false;
             Assert.IsTrue(economy.TryBuy(Upgrade.ShelfSize));
             Assert.IsTrue(economy.TryBuy(Upgrade.Clerk));
             Assert.IsTrue(economy.TryBuy(Upgrade.Marketing));
@@ -367,6 +372,9 @@ namespace ConvenienceStore.Tests
             Assert.AreEqual(economy.Reputation, loaded.Reputation, 0.001f);
             Assert.AreEqual(DayEvent.Picnic, loaded.Event);
             Assert.AreEqual(economy.UnlockedProducts, loaded.UnlockedProducts);
+            Assert.IsTrue(loaded.Shelves[4].Open);
+            Assert.IsFalse(loaded.Shelves[3].Open);
+            Assert.IsFalse(loaded.Shelves[1].Selling, "보류 상태도 저장");
             Assert.IsTrue(loaded.HasClerk);
             Assert.AreEqual(1, loaded.ShelfLevel);
             Assert.AreEqual(1, loaded.MarketingLevel);
@@ -512,6 +520,167 @@ namespace ConvenienceStore.Tests
             {
                 Assert.IsNotNull(village.FindPath(end, village.Entrances[0], village.IsRoad), end.ToString());
             }
+        }
+    }
+
+    public class StaffAndCustomerKindTests
+    {
+        private StoreEconomy _economy;
+
+        [SetUp]
+        public void SetUp() => _economy = new StoreEconomy();
+
+        [Test]
+        public void TwelveProducts_EachHaveAShelf()
+        {
+            Assert.AreEqual(12, ProductCatalog.All.Length);
+            Assert.AreEqual(12, new StoreMap().Shelves.Count);
+            Assert.AreEqual(12, new StoreArt(new StoreMap()).ProductIcons.Length);
+            for (int i = 1; i < ProductCatalog.All.Length; i++)
+            {
+                Assert.GreaterOrEqual(ProductCatalog.All[i].UnlockCost, ProductCatalog.All[i - 1].UnlockCost,
+                    "들여오는 값은 차례로 비싸진다");
+                Assert.Greater(ProductCatalog.All[i].Price, ProductCatalog.All[i].Cost);
+            }
+        }
+
+        [Test]
+        public void Stocker_IsASeparateHireWithItsOwnWage()
+        {
+            _economy.Sell(ProductCatalog.All[0], 200);
+            Assert.AreEqual(StoreEconomy.StockerCost, _economy.UpgradeCost(Upgrade.Stocker));
+            Assert.IsTrue(_economy.TryBuy(Upgrade.Stocker));
+            Assert.IsTrue(_economy.HasStocker);
+            Assert.IsFalse(_economy.HasClerk);
+            Assert.AreEqual(-1, _economy.UpgradeCost(Upgrade.Stocker));
+            Assert.IsTrue(_economy.TryBuy(Upgrade.Clerk));
+            Assert.AreEqual(StoreEconomy.ClerkWage + StoreEconomy.StockerWage, _economy.EndDay().Wage);
+
+            var loaded = new StoreEconomy(JsonUtility.FromJson<StoreSave>(JsonUtility.ToJson(_economy.ToSave())));
+            Assert.IsTrue(loaded.HasStocker);
+        }
+
+        [Test]
+        public void RudeCustomer_PaysCheapPriceAndGivesNoReputation()
+        {
+            Product p = ProductCatalog.All[1];
+            float rep = _economy.Reputation;
+            Assert.AreEqual(StoreEconomy.PriceOf(p, PriceTier.Cheap), _economy.Sell(p, 1, 0, PriceTier.Cheap, 0f));
+            Assert.AreEqual(rep, _economy.Reputation, 0.001f);
+        }
+
+        [Test]
+        public void KindCustomer_TipsEvenAfterWaitingAndBoostsReputation()
+        {
+            Product p = ProductCatalog.All[1];
+            Assert.AreEqual(0, _economy.TipFor(p, 1, 0.1f));
+            Assert.AreEqual(300, _economy.TipFor(p, 1, 0.1f, 1f, true));
+            float rep = _economy.Reputation;
+            _economy.Sell(p, 1, 300, PriceTier.Normal, 4f);
+            Assert.AreEqual(rep + 4f, _economy.Reputation, 0.001f);
+        }
+
+        [Test]
+        public void FishingMoney_CountsAsExtraIncome()
+        {
+            int money = _economy.Money;
+            _economy.Earn(3000);
+            Assert.AreEqual(money + 3000, _economy.Money);
+            DayReport report = _economy.EndDay();
+            Assert.AreEqual(3000, report.Extra);
+            Assert.AreEqual(0, report.Sales);
+            Assert.AreEqual(3000 - report.Rent, report.Profit);
+        }
+
+        [Test]
+        public void Events_AlsoBoostNewProducts()
+        {
+            _economy.Sell(ProductCatalog.All[0], 2000);
+            for (int i = 0; i < _economy.Shelves.Length; i++) _economy.TryUnlock(i);
+            Assert.AreEqual(ProductCatalog.All.Length, _economy.UnlockedProducts);
+            _economy.StartNextDay(DayEvent.HeatWave);
+            Assert.AreEqual(3f, _economy.DemandWeight(10), "무더위에는 생수");
+            _economy.StartNextDay(DayEvent.Rainy);
+            Assert.AreEqual(2f, _economy.DemandWeight(6), "비 오는 날에는 커피");
+        }
+    }
+
+    public class QuestTests
+    {
+        private StoreEconomy _economy;
+
+        [SetUp]
+        public void SetUp() => _economy = new StoreEconomy();
+
+        [Test]
+        public void MakeQuests_OnePerResidentUsingProductsOnSale()
+        {
+            _economy.MakeQuests();
+            Assert.AreEqual(1, _economy.Quests.Count, "첫날은 하나");
+            _economy.StartNextDay(DayEvent.None);
+            Assert.AreEqual(StoreEconomy.MaxQuests, _economy.Quests.Count, "둘째 날부터 둘");
+            Assert.AreNotEqual(_economy.Quests[0].Resident, _economy.Quests[1].Resident);
+            foreach (Quest q in _economy.Quests)
+            {
+                Assert.IsTrue(_economy.Shelves[q.Product].OnSale, "팔고 있는 상품만 부탁");
+                Assert.That(q.Quantity, Is.InRange(1, 3));
+                Assert.Greater(q.Reward, 0);
+                Assert.IsFalse(q.Done);
+                Assert.AreSame(q, _economy.QuestFor(q.Resident));
+            }
+        }
+
+        [Test]
+        public void MakeQuests_PrefersFavoriteWhenOnSale()
+        {
+            // 처음 세 상품만 팔 때, 0~2번 집 사람은 좋아하는 상품을 부탁한다.
+            for (int trial = 0; trial < 20; trial++)
+            {
+                _economy.MakeQuests();
+                Quest q = _economy.Quests[0];
+                int favorite = _economy.Residents[q.Resident].Favorite;
+                if (favorite < StoreEconomy.StartProducts) Assert.AreEqual(favorite, q.Product);
+            }
+        }
+
+        [Test]
+        public void CompleteQuest_PaysRewardAndRaisesFriendshipByTwo()
+        {
+            _economy.MakeQuests();
+            Quest q = _economy.Quests[0];
+            int money = _economy.Money;
+            int earned = _economy.CompleteQuest(q);
+            Assert.AreEqual(q.Reward, earned);
+            Assert.AreEqual(money + q.Reward, _economy.Money);
+            Assert.AreEqual(2, _economy.Residents[q.Resident].Friendship);
+            Assert.IsTrue(q.Done);
+            Assert.IsNull(_economy.QuestFor(q.Resident));
+
+            DayReport report = _economy.EndDay();
+            Assert.AreEqual(1, report.QuestsDone);
+            Assert.AreEqual(q.Reward, report.QuestReward);
+            Assert.AreEqual(q.Reward - report.Rent, report.Profit);
+        }
+
+        [Test]
+        public void Quests_SurviveSaveAndLoad()
+        {
+            _economy.StartNextDay(DayEvent.None);
+            _economy.CompleteQuest(_economy.Quests[0]);
+            var loaded = new StoreEconomy(JsonUtility.FromJson<StoreSave>(JsonUtility.ToJson(_economy.ToSave())));
+            Assert.AreEqual(2, loaded.Quests.Count);
+            Assert.IsTrue(loaded.Quests[0].Done);
+            Assert.IsFalse(loaded.Quests[1].Done);
+            Assert.AreEqual(_economy.Quests[1].Reward, loaded.Quests[1].Reward);
+        }
+
+        [Test]
+        public void PausedProduct_IsNotPickedByCustomers()
+        {
+            _economy.Shelves[1].Selling = false;
+            for (float roll = 0f; roll <= 1f; roll += 0.05f) Assert.AreNotEqual(1, _economy.PickShelf(roll));
+            Assert.IsFalse(_economy.Shelves[1].OnSale);
+            Assert.IsTrue(_economy.Shelves[1].Open);
         }
     }
 

@@ -16,6 +16,10 @@ public static class AutoPlay
     private const string RequestPath = "Library/AutoPlay/request.txt";
     private const string ScreenshotPath = "Library/AutoPlay/screenshot.png";
     private const string ShotPendingKey = "AutoPlay.shotPending";
+    /// <summary>이 파일이 있으면 첫 캡처 뒤에도 15초마다 Library/AutoPlay/shot_N.png 를 여덟 장 더 찍습니다.</summary>
+    private const string SeriesPath = "Library/AutoPlay/series.txt";
+    private static int _seriesShot;
+    private static float _nextSeriesTime;
 
     static AutoPlay()
     {
@@ -73,5 +77,22 @@ public static class AutoPlay
         SessionState.SetBool(ShotPendingKey, false);
         ScreenCapture.CaptureScreenshot(ScreenshotPath);
         Debug.Log($"[AutoPlay] Screenshot requested -> {ScreenshotPath}");
+        if (!File.Exists(SeriesPath)) return;
+        _seriesShot = 0;
+        _nextSeriesTime = Time.timeSinceLevelLoad + 15f;
+        EditorApplication.update += SeriesScreenshots;
+    }
+
+    private static void SeriesScreenshots()
+    {
+        if (!EditorApplication.isPlaying || _seriesShot >= 8)
+        {
+            EditorApplication.update -= SeriesScreenshots;
+            return;
+        }
+        if (Time.timeSinceLevelLoad < _nextSeriesTime) return;
+        _nextSeriesTime += 15f;
+        _seriesShot++;
+        ScreenCapture.CaptureScreenshot($"Library/AutoPlay/shot_{_seriesShot}.png");
     }
 }

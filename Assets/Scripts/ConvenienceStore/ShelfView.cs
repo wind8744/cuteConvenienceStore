@@ -63,14 +63,16 @@ namespace ConvenienceStore
         {
             for (int i = 0; i < _items.Length; i++) _items[i].enabled = Stock.Open && i < Stock.Stock;
             // 아직 들여오지 않은 상품의 진열대는 어둡게 둔다.
-            _priceTag.enabled = Stock.Open && Stock.Tier != PriceTier.Normal;
+            _priceTag.enabled = Stock.OnSale && Stock.Tier != PriceTier.Normal;
             _priceTag.color = Stock.Tier == PriceTier.Cheap ? new Color(0.35f, 0.65f, 1f) : new Color(1f, 0.8f, 0.2f);
-            _frame.color = Stock.Open ? Color.white : new Color(0.72f, 0.7f, 0.74f);
+            // 아직 안 들여온 진열대는 어둡게, 보류 중인 진열대는 푸르스름하게 둔다.
+            _frame.color = !Stock.Open ? new Color(0.72f, 0.7f, 0.74f)
+                : !Stock.Selling ? new Color(0.78f, 0.82f, 0.95f) : Color.white;
         }
 
         private void Update()
         {
-            bool empty = Stock != null && Stock.Open && Stock.Stock == 0;
+            bool empty = Stock != null && Stock.OnSale && Stock.Stock == 0;
             _alert.enabled = _alertIcon.enabled = empty && Mathf.FloorToInt(Time.time * 3f) % 2 == 0;
         }
     }

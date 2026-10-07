@@ -11,7 +11,7 @@ namespace ConvenienceStore
     {
         /// <summary>
         /// 위쪽 줄부터 적습니다. g 풀밭, p 길, # 벽, w 안쪽 벽면, . 바닥, + 문,
-        /// 1~6 진열대(가로 2칸), K 계산대, L 화분.
+        /// 1~9·a~c 진열대(가로 2칸, 상품 순서), K 계산대, L 화분.
         /// </summary>
         public static readonly string[] DefaultLayout =
         {
@@ -19,15 +19,15 @@ namespace ConvenienceStore
             "ggg##################ggg",
             "ggg#wwwwwwwwwwwwwwww#ggg",
             "ggg#L..............L#ggg",
-            "ggg#..11..22..33....#ggg",
+            "ggg#..11..22..33.44.#ggg",
             "ggg#................#ggg",
-            "ggg#..44..55..66....#ggg",
+            "ggg#..55..66..77.88.#ggg",
             "ggg#................#ggg",
+            "ggg#..99..aa..bb.cc.#ggg",
             "ggg#................#ggg",
             "ggg#............K...#ggg",
             "ggg#............K...#ggg",
             "ggg#............K...#ggg",
-            "ggg#................#ggg",
             "ggg#######++#########ggg",
             "ggggggggggppgggggggggggg",
         };
@@ -63,7 +63,8 @@ namespace ConvenienceStore
                 {
                     char t = Tiles[x, y];
                     var p = new Vector2Int(x, y);
-                    if (char.IsDigit(t) && !shelfByDigit.ContainsKey(t)) shelfByDigit[t] = p;
+                    bool shelf = char.IsDigit(t) || (t >= 'a' && t <= 'c');
+                    if (shelf && !shelfByDigit.ContainsKey(t)) shelfByDigit[t] = p;
                     else if (t == 'K') _counter.Add(p);
                     else if (t == 'L') _plants.Add(p);
                     else if (t == 'p') _doors.Add(p);

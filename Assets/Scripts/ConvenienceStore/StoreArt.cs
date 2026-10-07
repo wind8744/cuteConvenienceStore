@@ -150,12 +150,23 @@ namespace ConvenienceStore
             new[] { "OoOoOo", "OOOOOO", "OYYYYO", "OYRRYO", "OYYYYO", "OOOOOO", "oOoOoO" }, // 과자
             new[] { ".PPPP.", "PPPPPP", "PWPPPP", "PPPPPP", ".PPPP.", "..TT..", "..TT.." }, // 아이스크림
             new[] { "KKKKKK", "KWWKRK", "KWWKRK", "KWWKKK", "KWWKGK", "KWWKYK", "KKKKKK" }, // 도시락
+            new[] { "WWWWWW", "BBBBBB", "BbBBBB", "BbBBBB", "BBBBBB", ".BBBB.", "......" }, // 커피
+            new[] { "..OO..", ".OOOO.", "OOOOOO", "OWOOWO", "OOOOOO", ".OOOO.", ".OO.OO" }, // 젤리
+            new[] { "..RR..", ".RRRR.", ".RRRR.", ".RRRR.", ".RRRR.", "..TT..", "..TT.." }, // 핫바
+            new[] { "..YY..", ".YYYY.", "YGGGGY", "YRRRRY", "YYYYYY", "......", "......" }, // 샌드위치
+            new[] { "..LL..", ".LLLL.", ".CCCC.", ".CWCC.", ".CWCC.", ".CCCC.", ".CCCC." }, // 생수
+            new[] { "DDDDDD", "DdDDdD", "DDDDDD", "DdDDdD", "DDDDDD", "DdDDdD", "DDDDDD" }, // 초콜릿
         };
         private static readonly Dictionary<char, Color32> ProductPalette = new Dictionary<char, Color32>
         {
             ['W'] = White, ['N'] = C(44, 62, 56), ['R'] = Red, ['Y'] = Yellow, ['G'] = C(110, 190, 110),
             ['O'] = C(250, 150, 70), ['o'] = C(226, 120, 52), ['P'] = Pink, ['T'] = C(214, 170, 120),
-            ['K'] = C(60, 50, 60),
+            ['K'] = C(60, 50, 60), ['B'] = C(118, 78, 50), ['b'] = C(160, 112, 72), ['L'] = C(70, 130, 220),
+            ['C'] = C(176, 224, 250), ['D'] = C(100, 60, 40), ['d'] = C(144, 94, 62),
+        };
+        private static readonly string[] StarMap =
+        {
+            "...Y...", "..YYY..", "YYYYYYY", ".YYYYY.", "..YYY..", ".YY.YY.", ".......",
         };
 
         private static readonly string[] HeartMap =
@@ -198,10 +209,12 @@ namespace ConvenienceStore
         public Sprite Exclaim { get; }
         public Sprite Crown { get; }
         public Sprite Bolt { get; }
+        public Sprite Star { get; }
         public Sprite WhitePixel { get; }
         public Sprite[] ProductIcons { get; }
         public CharacterSprites Owner { get; }
         public CharacterSprites Clerk { get; }
+        public CharacterSprites Stocker { get; }
 
         // HUD(IMGUI)용 텍스처
         public Texture2D PanelTexture { get; }
@@ -229,6 +242,7 @@ namespace ConvenienceStore
             };
             Crown = Icon(CrownMap, badge).ToSprite(new Vector2(0.5f, 0.5f));
             Bolt = Icon(BoltMap, badge).ToSprite(new Vector2(0.5f, 0.5f));
+            Star = Icon(StarMap, badge).ToSprite(new Vector2(0.5f, 0.5f));
 
             ProductIcons = new Sprite[ProductMaps.Length];
             for (int i = 0; i < ProductMaps.Length; i++)
@@ -242,6 +256,7 @@ namespace ConvenienceStore
 
             Owner = BuildCharacter(C(96, 62, 48), SkinColors[0], White, PantsColors[0], true);
             Clerk = BuildCharacter(C(226, 178, 92), SkinColors[1], White, PantsColors[1], true);
+            Stocker = BuildCharacter(C(236, 156, 178), SkinColors[2], White, PantsColors[2], true);
 
             PanelTexture = BuildPanel().ToTexture(3);
             HeartTexture = Icon(HeartMap, emote).ToTexture();

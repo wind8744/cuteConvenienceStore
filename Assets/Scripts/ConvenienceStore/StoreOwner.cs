@@ -27,6 +27,8 @@ namespace ConvenienceStore
         public Vector2 MoveInput { get; private set; }
         /// <summary>영업 중이 아닐 때는 false 로 두어 움직이지 못하게 합니다.</summary>
         public bool CanMove { get; set; } = true;
+        /// <summary>자동 플레이가 켜져 있으면 키보드 대신 이 값으로 움직입니다.</summary>
+        public Vector2? ExternalInput { get; set; }
 
         public void Init(TileGrid map, CharacterView view, Vector2 start, float speed)
         {
@@ -38,7 +40,7 @@ namespace ConvenienceStore
 
         private void Update()
         {
-            Vector2 input = CanMove ? ReadInput() : Vector2.zero;
+            Vector2 input = !CanMove ? Vector2.zero : ExternalInput ?? ReadInput();
             MoveInput = input;
             bool moving = input != Vector2.zero;
             if (moving)

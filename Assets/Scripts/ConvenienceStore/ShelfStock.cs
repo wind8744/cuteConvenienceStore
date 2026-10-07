@@ -11,6 +11,10 @@ namespace ConvenienceStore
         public int Stock { get; private set; }
         /// <summary>이 진열대 상품에 매긴 가격대.</summary>
         public PriceTier Tier { get; set; } = PriceTier.Normal;
+        /// <summary>들여온 상품을 잠시 안 파는 상태로 둘 수 있습니다. 보류 중이면 손님이 찾지 않습니다.</summary>
+        public bool Selling { get; set; } = true;
+        /// <summary>들여왔고 지금 팔고 있는지.</summary>
+        public bool OnSale => Open && Selling;
         public int Missing => Open ? Capacity - Stock : 0;
 
         public ShelfStock(Product product, int capacity, bool open)

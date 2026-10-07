@@ -14,6 +14,10 @@ namespace ConvenienceStore
         Vip,
         /// <summary>걸음이 빠르고 금방 지치지만, 제때 계산해 주면 팁을 더 주는 손님.</summary>
         Hurried,
+        /// <summary>진상: 새치기를 하고, 줄 선 다른 손님들을 지치게 하고, 값을 깎고, 팁도 평판도 없는 손님.</summary>
+        Rude,
+        /// <summary>착한 손님: 느긋하게 기다리고, 기다렸어도 팁을 주고, 평판을 많이 올려 주는 손님.</summary>
+        Kind,
     }
 
     public class Customer : MonoBehaviour
@@ -176,7 +180,7 @@ namespace ConvenienceStore
             {
                 _view.HideBubble();
                 _warned = false;
-                _game.JoinQueue(this);
+                _game.JoinQueue(this, Kind == CustomerKind.Rude);
                 ShowPatienceBar(true);
                 _pathGoal = new Vector2Int(-1, -1);
                 _state = State.ToQueue;
@@ -198,7 +202,7 @@ namespace ConvenienceStore
             _atQueueSpot = MoveTo(StoreMap.FeetPos(_game.QueueSpot(this)));
             if (_atQueueSpot) _view.Face(Vector2.right);
 
-            _patience -= Time.deltaTime;
+            _patience -= Time.deltaTime * _game.PatienceDrain(this);
             UpdatePatienceBar();
             if (_patience > 0f) return;
 
